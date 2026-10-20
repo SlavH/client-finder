@@ -1,0 +1,38 @@
+services:
+  - Custom web application development
+  - E-commerce (Shopify, WooCommerce)
+  - SaaS MVP development
+  - Website performance optimization
+  - Legacy system modernization
+  - API integrations
+
+rates:
+  hourly: 120
+  project_min: 3000
+  currency: USD
+
+availability: "Open for new projects starting next month"
+
+target:
+  industries:
+    - healthcare
+    - logistics
+    - professional services
+    - local retail
+    - real estate
+  company_size: "1-50 employees"
+  locations:
+    - United States
+    - Canada
+    - United Kingdom
+
+do_not_contact_domains:
+  - google.com
+  - facebook.com
+  - microsoft.com
+  - amazon.com
+
+do_not_contact_keywords:
+  - recruiting agency
+  - lead generation
+  - outsourcing

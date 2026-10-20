@@ -1,0 +1,40 @@
+# client-finder configuration
+# Copy to config.yaml and fill in your values
+
+llm:
+  provider: "openai"        # openai | anthropic | ollama | local
+  model: "gpt-4o-mini"
+  api_key_env: "OPENAI_API_KEY"
+  base_url: null            # set for Ollama/local: http://localhost:11434/v1
+  temperature: 0.7
+  max_tokens: 1500
+
+outreach:
+  mode: "email_only"        # email_only | work_first
+  humanize: true            # LLM humanization pass on every message
+  dry_run: true             # TRUE by default; flip to false to actually send
+  channels: [email, linkedin, twitter, webform]
+  max_per_run: 20
+  daily_caps:
+    email: 20
+    linkedin: 5
+    twitter: 10
+    webform: 10
+  send_hours: [9, 10, 11, 14, 15, 16]   # local hours when sending is allowed
+  timezone: "UTC"
+
+work_first:
+  output_dir: "work/"
+  deliverable_types: [mockup, audit, code_sample]
+  max_deliverables_per_run: 5
+
+sources:
+  github_jobs: true
+  google_maps: true
+  linkedin: true
+  job_boards: true
+  respect_robots_txt: true
+  rate_limit_seconds: 5
+
+state:
+  db_path: ".client_finder_state.db"

@@ -1,0 +1,24 @@
+# Your writing voice for outreach messages
+
+style: "friendly, direct, no fluff"
+formality: "casual"           # casual | professional | formal
+length: "short"                # short | medium | long
+humor: 1                       # 0 = none, 3 = playful
+opening_style: "observation"   # observation | compliment | question | direct
+use_contractions: true
+signature_optional: true
+
+# Phrases the LLM must never use (anti-AI-detector)
+avoid_patterns:
+  - "I hope this email finds you well"
+  - "In today's digital landscape"
+  - "revolutionize your business"
+  - "game-changer"
+  - "cutting-edge"
+  - "synergy"
+  - "leverage"
+
+max_paragraph_sentences: 3
+
+# Your signature block (added to every email)
+signature: "Your Name • you@example.com • https://yourportfolio.com"

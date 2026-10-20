@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.pyc
+*.env
+.env
+config.yaml
+.client_finder_state.db
+work/
+*.egg-info/
+dist/
+build/
+.eggs/
+.ipynb_checkpoints/

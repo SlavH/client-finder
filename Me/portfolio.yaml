@@ -1,0 +1,18 @@
+projects:
+  - name: "HealthTrack Patient Portal"
+    description: "HIPAA-adjacent patient portal for a 30-provider clinic"
+    url: "https://yourportfolio.com/healthtrack"
+    tech: ["React", "Node.js", "PostgreSQL", "AWS"]
+  - name: "FleetLogistics Dashboard"
+    description: "Real-time fleet tracking and route optimization for logistics company"
+    url: "https://yourportfolio.com/fleetlogistics"
+    tech: ["React", "Python", "FastAPI", "PostgreSQL"]
+  - name: "Boutique E-commerce Site"
+    description: "Custom Shopify theme and checkout optimization for local retailer"
+    url: "https://yourportfolio.com/boutique"
+    tech: ["Shopify", "Liquid", "JavaScript"]
+
+testimonials:
+  - text: "Alex delivered our patient portal 2 weeks ahead of schedule."
+    author: "Dr. Sarah Chen"
+    role: "Clinic Director"
