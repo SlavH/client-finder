@@ -36,5 +36,12 @@ sources:
   respect_robots_txt: true
   rate_limit_seconds: 5
 
+scraping:
+  impersonate: "rotate"          # chrome120 | chrome124 | chrome131 | firefox122 | safari17 | safari18 | rotate
+  rate_limit_seconds: 5
+  timeout_seconds: 30
+  max_retries: 3
+  respect_robots_txt: true
+
 state:
   db_path: ".client_finder_state.db"

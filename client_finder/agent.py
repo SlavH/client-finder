@@ -59,6 +59,12 @@ class ClientFinderAgent:
                 all_leads.extend(leads)
             except Exception as exc:  # pragma: no cover - source errors are logged
                 print(f"[source:{source_name}] error: {exc}")
+            finally:
+                # Close scraper to release Playwright/browser resources
+                try:
+                    source.scraper.close()
+                except Exception:
+                    pass
 
         # Deduplicate by company+url
         seen = set()

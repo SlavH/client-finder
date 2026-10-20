@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import time
 from abc import ABC, abstractmethod
-from urllib.parse import urlparse
 from typing import Any
 
-import requests
 from bs4 import BeautifulSoup
+
+from client_finder.scraper import BrowserScraper
 
 SOURCE_REGISTRY: dict[str, type["BaseSource"]] = {}
 
@@ -23,39 +22,21 @@ class BaseSource(ABC):
 
     def __init__(self, config: dict[str, Any] | None = None):
         self.config = config or {}
-        self.rate_limit = self.config.get("rate_limit_seconds", 5)
-        self.respect_robots = self.config.get("respect_robots_txt", True)
-        self._session = requests.Session()
-        self._session.headers.update(
-            {"User-Agent": "client-finder/1.0 (lead discovery; contact: you@example.com)"}
+        scraping_cfg = self.config.get("scraping", {})
+        self.scraper = BrowserScraper(
+            impersonate=scraping_cfg.get("impersonate", "rotate"),
+            rate_limit_seconds=scraping_cfg.get("rate_limit_seconds", 5.0),
+            timeout_seconds=scraping_cfg.get("timeout_seconds", 30.0),
+            max_retries=scraping_cfg.get("max_retries", 3),
+            respect_robots_txt=scraping_cfg.get("respect_robots_txt", True),
         )
 
-    def _robots_allowed(self, url: str) -> bool:
-        if not self.respect_robots:
-            return True
-        try:
-            parsed = urlparse(url)
-            robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-            resp = self._session.get(robots_url, timeout=5)
-            if resp.status_code != 200:
-                return True
-            if "Disallow: /" in resp.text:
-                return False
-        except Exception:
-            pass
-        return True
-
     def _fetch(self, url: str) -> str | None:
-        if not self._robots_allowed(url):
-            return None
-        try:
-            resp = self._session.get(url, timeout=10)
-            time.sleep(self.rate_limit)
-            if resp.status_code == 200:
-                return resp.text
-        except Exception:
-            pass
-        return None
+        """Fetch a URL with browser impersonation. Returns HTML text or None."""
+        return self.scraper.get_text(url)
+
+    def _parse(self, html: str) -> BeautifulSoup:
+        return BeautifulSoup(html, "html.parser")
 
     @abstractmethod
     def discover(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -73,7 +54,7 @@ class GitHubJobsSource(BaseSource):
             html = self._fetch(url)
             if not html:
                 continue
-            soup = BeautifulSoup(html, "html.parser")
+            soup = self._parse(html)
             for row in soup.select("tr.job")[:limit]:
                 company_el = row.select_one("td.company h3")
                 title_el = row.select_one("td.position h2")
@@ -115,7 +96,7 @@ class GoogleMapsSource(BaseSource):
             html = self._fetch(url)
             if not html:
                 continue
-            soup = BeautifulSoup(html, "html.parser")
+            soup = self._parse(html)
             for card in soup.select("div.Nv2PK")[:limit]:
                 name_el = card.select_one("div.qBF1Pd")
                 if not name_el:
@@ -147,7 +128,7 @@ class JobBoardsSource(BaseSource):
         url = "https://wellfound.com/role/full-stack-developer"
         html = self._fetch(url)
         if html:
-            soup = BeautifulSoup(html, "html.parser")
+            soup = self._parse(html)
             for card in soup.select("div.job")[:limit]:
                 title_el = card.select_one("h3")
                 company_el = card.select_one("h4")
@@ -177,4 +158,5 @@ class LinkedInSource(BaseSource):
 
     def discover(self, limit: int = 20) -> list[dict[str, Any]]:
         # LinkedIn heavily blocks scraping; placeholder for authenticated sessions/API
+        # curl_cffi impersonation helps but LinkedIn typically requires auth.
         return []
