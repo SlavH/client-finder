@@ -33,6 +33,12 @@ session:
   headless_after_login: true
   login_timeout_seconds: 600
   session_check_timeout_seconds: 10
+  novnc:
+    enabled: true           # Use noVNC for browser login in Docker
+    vnc_port: 5900
+    websockify_port: 6080
+    novnc_path: "/usr/share/novnc"
+    display: ":99"
 
 work_first:
   output_dir: "work/"

@@ -52,6 +52,46 @@ LINKEDIN_SESSION_COOKIE=your-session-cookie
 Your LinkedIn profile (from `Me/contact.yaml`):
 https://www.linkedin.com/in/slav-hayrapetyan-b867a5243
 
+## Browser-Based Email Sending (with noVNC)
+
+By default, emails are sent via the Gmail web UI using Playwright browser automation.
+This avoids SMTP restrictions and works with Gmail's modern login flows.
+
+### First run (login required)
+```bash
+client-finder run --sources github_jobs --channels email --limit 5 --send
+```
+
+On the first run, the tool will:
+1. Start Xvfb + noVNC in the background
+2. Print a noVNC URL (e.g., `http://localhost:6080/vnc.html`)
+3. Open that URL in your browser
+4. Log in to Gmail + complete 2FA in the browser window
+5. Press Enter in the terminal when done
+6. Cookies are saved to `state/cookies/mail_google_com.json`
+
+### Subsequent runs (no login needed)
+Cookies are reused automatically. The browser runs headless:
+```bash
+client-finder run --sources github_jobs --channels email --limit 5 --send
+```
+
+### Force re-login
+```bash
+rm state/cookies/mail_google_com.json
+```
+
+### Docker usage
+Build and run with Docker:
+```bash
+docker build -t client-finder .
+docker run -p 6080:6080 -e NOVNC_HOST=your-docker-host client-finder
+```
+Then open `http://your-docker-host:6080` in your browser for the noVNC login screen.
+
+## SMTP fallback
+Set `outreach.email.use_browser: false` in `config.yaml` to use SMTP instead of browser automation. Requires Gmail app password in `.env`.
+
 ## Project layout
 
 ```

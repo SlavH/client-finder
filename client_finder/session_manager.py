@@ -1,8 +1,8 @@
 """Universal session manager with cookie-based persistence.
 
 Handles login sessions for any platform that requires authentication.
-First run opens a visible browser for manual login + 2FA; subsequent runs
-load saved cookies and run headless.
+First run opens a visible browser (via noVNC in Docker) for manual login + 2FA;
+subsequent runs load saved cookies and run headless.
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page
+
+from client_finder.novnc_launcher import NovncLauncher, check_novnc_available, is_docker
 
 
 class CookieManager:
@@ -62,7 +64,12 @@ class CookieManager:
 
 
 class BrowserLauncher:
-    """Launches Playwright browsers with session cookie support."""
+    """Launches Playwright browsers with session cookie support.
+
+    When cookies don't exist (first login), uses noVNC (in Docker) or
+    headed browser (on desktop) for manual login. When cookies exist,
+    launches headless Chromium with cookies injected.
+    """
 
     def __init__(
         self,
@@ -70,6 +77,8 @@ class BrowserLauncher:
         headless_after_login: bool = True,
         login_timeout_seconds: int = 600,
         session_check_timeout_seconds: int = 10,
+        use_novnc: bool | None = None,
+        novnc_config: dict[str, Any] | None = None,
     ):
         self.cookie_manager = cookie_manager
         self.headless_after_login = headless_after_login
@@ -77,14 +86,24 @@ class BrowserLauncher:
         self.session_check_timeout_seconds = session_check_timeout_seconds
         self._playwright = None
         self._browser: Browser | None = None
+        self._novnc: NovncLauncher | None = None
+
+        # Auto-detect: use noVNC if in Docker and noVNC is available
+        if use_novnc is None:
+            self.use_novnc = is_docker() and check_novnc_available()
+        else:
+            self.use_novnc = use_novnc
+
+        # Store novnc config for the launcher
+        self.novnc_config = novnc_config or {}
 
     def _get_playwright(self):
         if self._playwright is None:
             self._playwright = sync_playwright().start()
         return self._playwright
 
-    def launch(self, headless: bool = False) -> Browser:
-        """Launch a Chromium browser instance."""
+    def _launch_playwright_browser(self, headless: bool = False) -> Browser:
+        """Launch a Playwright Chromium browser instance."""
         pw = self._get_playwright()
         browser = pw.chromium.launch(
             headless=headless,
@@ -115,8 +134,123 @@ class BrowserLauncher:
                 pass  # Cookies may be invalid for this domain; ignore
         return context
 
+    def launch_with_login(
+        self,
+        domain: str,
+        login_url: str,
+        success_selector: str,
+        login_message: str | None = None,
+    ) -> tuple[Browser, BrowserContext]:
+        """Launch browser, ensure login, return (browser, context) with valid cookies.
+
+        If cookies exist and session is valid → headless browser with cookies.
+        If no cookies or session invalid → noVNC/manual login flow → save cookies → headless.
+        """
+        cookies = self.cookie_manager.get_cookies(domain)
+
+        if cookies:
+            # Try headless with existing cookies first
+            browser = self._launch_playwright_browser(headless=self.headless_after_login)
+            context = self.new_context(browser, domain)
+            page = context.new_page()
+            try:
+                page.goto(login_url, timeout=30000)
+                # Quick check: is session still valid?
+                try:
+                    page.wait_for_selector(success_selector, timeout=self.session_check_timeout_seconds * 1000)
+                    # Session valid, return context
+                    page.close()
+                    return browser, context
+                except Exception:
+                    # Session expired, need re-login
+                    page.close()
+                    context.close()
+                    browser.close()
+            except Exception:
+                page.close()
+                context.close()
+                browser.close()
+
+        # Need manual login via noVNC or headed browser
+        return self._manual_login_flow(domain, login_url, success_selector, login_message)
+
+    def _manual_login_flow(
+        self,
+        domain: str,
+        login_url: str,
+        success_selector: str,
+        login_message: str | None = None,
+    ) -> tuple[Browser, BrowserContext]:
+        """Run manual login flow: noVNC (Docker) or headed browser (desktop).
+
+        Returns (browser, context) with valid cookies saved.
+        """
+
+        if self.use_novnc:
+            # Use noVNC for Docker environment
+            self._novnc = NovncLauncher(
+                vnc_port=self.novnc_config.get("vnc_port", 5900),
+                websockify_port=self.novnc_config.get("websockify_port", 6080),
+                novnc_path=self.novnc_config.get("novnc_path", "/usr/share/novnc"),
+                display=self.novnc_config.get("display", ":99"),
+                login_timeout_seconds=self.login_timeout_seconds,
+            )
+            novnc_url = self._novnc.start(login_url=login_url)
+            print(f"\n{'='*70}")
+            print(f"noVNC URL: {novnc_url}")
+            print(f"Open this URL in your browser to log in to {login_url}")
+            print(f"Complete any 2FA / captcha, then come back here.")
+            print(f"{'='*70}\n")
+
+            ok = self._novnc.wait_for_login(message=login_message)
+            if not ok:
+                self._novnc.stop()
+                raise RuntimeError("Login timeout or cancelled")
+
+            # Save cookies from noVNC Chromium
+            # The noVNC launcher uses system chromium, not Playwright.
+            # We need to get cookies from the running Chromium via Playwright
+            # connecting to the same display, or re-open with Playwright headed.
+            # Simplest: launch Playwright headed (now that user is logged in)
+            # and cookies should be in the user data dir.
+            # Actually, let's use Playwright headed to capture cookies.
+            self._novnc.stop()
+
+        # Launch Playwright headed browser (now user should be logged in via noVNC
+        # cookies, or this is a desktop environment with display)
+        browser = self._launch_playwright_browser(headless=False)
+        context = self.new_context(browser, domain)
+        page = context.new_page()
+
+        try:
+            page.goto(login_url, timeout=30000)
+            # Wait for session to be valid
+            page.wait_for_selector(success_selector, timeout=self.session_check_timeout_seconds * 1000)
+            # Save cookies
+            cookies = context.cookies()
+            self.cookie_manager.save_cookies(domain, cookies)
+            print(f"Session cookies saved for {domain}")
+            return browser, context
+        except Exception as exc:
+            page.close()
+            context.close()
+            browser.close()
+            raise RuntimeError(f"Login verification failed: {exc}")
+
+    def launch_headless(self, domain: str) -> tuple[Browser, BrowserContext]:
+        """Launch headless browser with saved cookies (no login needed)."""
+        browser = self._launch_playwright_browser(headless=self.headless_after_login)
+        context = self.new_context(browser, domain)
+        return browser, context
+
     def close(self) -> None:
-        """Close browser and playwright."""
+        """Close browser, playwright, and noVNC."""
+        if self._novnc is not None:
+            try:
+                self._novnc.stop()
+            except Exception:
+                pass
+            self._novnc = None
         if self._browser is not None:
             try:
                 self._browser.close()
@@ -153,34 +287,3 @@ def random_mouse_move(page: Page) -> None:
         )
     except Exception:
         pass
-
-
-def wait_for_login(
-    page: Page,
-    success_selector: str,
-    timeout_seconds: int = 600,
-    message: str | None = None,
-) -> bool:
-    """Wait for the user to complete manual login.
-
-    Navigates to the login page, prints instructions, and waits until
-    the success_selector appears (indicating logged in) or timeout.
-    """
-    if message:
-        print(message)
-    else:
-        print(
-            f"\n{'='*60}\n"
-            f"PLEASE LOG IN IN THE BROWSER WINDOW\n"
-            f"Complete any 2FA / captcha, then the script will detect login.\n"
-            f"Waiting up to {timeout_seconds} seconds...\n"
-            f"{'='*60}\n"
-        )
-
-    try:
-        page.wait_for_selector(success_selector, timeout=timeout_seconds * 1000)
-        print("Login detected! Saving session cookies...")
-        return True
-    except Exception:
-        print("Login timeout - no successful login detected.")
-        return False

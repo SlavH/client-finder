@@ -1,4 +1,4 @@
-"""Outreach channel adapters."""
+"""Outreach channel adapters with browser-based login and cookie persistence."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from client_finder.session_manager import (
     human_delay,
     human_type,
     random_mouse_move,
-    wait_for_login,
 )
 
 
@@ -37,6 +36,36 @@ class BaseChannel(ABC):
         deliverable_description: str | None = None,
     ) -> dict[str, Any]:
         ...
+
+    def _get_launcher(self, domain: str) -> tuple[BrowserLauncher, CookieManager]:
+        """Create a BrowserLauncher and CookieManager for a domain."""
+        session_cfg = (
+            self.config.get("session", {}) if isinstance(self.config, dict) else {}
+        )
+        cookies_dir = session_cfg.get("cookies_dir", "state/cookies")
+        headless = session_cfg.get("headless_after_login", True)
+        login_timeout = session_cfg.get("login_timeout_seconds", 600)
+        novnc_config = session_cfg.get("novnc", {}) or {}
+
+        cookie_mgr = CookieManager(cookies_dir)
+        launcher = BrowserLauncher(
+            cookie_mgr,
+            headless_after_login=headless,
+            login_timeout_seconds=login_timeout,
+            use_novnc=None,  # Auto-detect Docker
+            novnc_config=novnc_config,
+        )
+        return launcher, cookie_mgr
+
+    def _build_full_message(self, body: str, contact: dict) -> str:
+        lines = [body, ""]
+        signature = contact.get("signature", "Best,\nYour Name\nyou@example.com")
+        lines.append(signature)
+        lines.append("")
+        lines.append("---")
+        lines.append(contact.get("address", "123 Main Street, Anytown, USA"))
+        lines.append("Reply 'STOP' to unsubscribe.")
+        return "\n".join(lines)
 
 
 @register_channel
@@ -137,60 +166,23 @@ class EmailChannel(BaseChannel):
             return {"status": "queued", "message": "dry-run"}
 
         contact = self.config.get("contact", {}) if isinstance(self.config, dict) else {}
-        sender_email = contact.get("email", "")
-        session_cfg = (
-            self.config.get("session", {}) if isinstance(self.config, dict) else {}
-        )
-        cookies_dir = session_cfg.get("cookies_dir", "state/cookies")
-        headless = session_cfg.get("headless_after_login", True)
-        login_timeout = session_cfg.get("login_timeout_seconds", 600)
-
-        cookie_mgr = CookieManager(cookies_dir)
-        launcher = BrowserLauncher(
-            cookie_mgr,
-            headless_after_login=headless,
-            login_timeout_seconds=login_timeout,
-        )
+        launcher, cookie_mgr = self._get_launcher("mail.google.com")
 
         try:
-            browser = launcher.launch(headless=False)  # Start headed for login check
-            context = launcher.new_context(browser, "mail.google.com")
+            # launch_with_login handles: check cookies → headless or noVNC login → save cookies
+            browser, context = launcher.launch_with_login(
+                domain="mail.google.com",
+                login_url="https://mail.google.com",
+                success_selector='[gh="cm"]',  # Compose button
+                login_message=(
+                    f"\n{'='*70}\n"
+                    f"PLEASE LOG INTO GMAIL IN THE BROWSER WINDOW\n"
+                    f"Open the noVNC URL shown above, complete 2FA if prompted,\n"
+                    f"then press Enter here when logged in.\n"
+                    f"{'='*70}\n"
+                ),
+            )
             page = context.new_page()
-            page.goto("https://mail.google.com", timeout=30000)
-
-            # Check if session is valid (Compose button present)
-            session_valid = False
-            try:
-                page.wait_for_selector('[gh="cm"]', timeout=5000)
-                session_valid = True
-            except Exception:
-                session_valid = False
-
-            if not session_valid:
-                # Need to log in manually
-                browser.close()
-                browser = launcher.launch(headless=False)
-                context = launcher.new_context(browser, "mail.google.com")
-                page = context.new_page()
-                page.goto("https://mail.google.com", timeout=30000)
-                ok = wait_for_login(
-                    page,
-                    success_selector='[gh="cm"]',
-                    timeout_seconds=login_timeout,
-                    message=(
-                        f"\n{'='*60}\n"
-                        f"PLEASE LOG INTO GMAIL IN THE BROWSER WINDOW\n"
-                        f"Complete 2FA if prompted, then the script will continue.\n"
-                        f"{'='*60}\n"
-                    ),
-                )
-                if not ok:
-                    browser.close()
-                    launcher.close()
-                    return {"status": "failed", "error": "login timeout", "message": ""}
-                # Save cookies after successful login
-                cookies = context.cookies()
-                cookie_mgr.save_cookies("mail.google.com", cookies)
 
             # Compose email
             human_delay(1, 2)
@@ -223,12 +215,12 @@ class EmailChannel(BaseChannel):
             page.click('div[role="button"][gh="tm"]')
             human_delay(3, 5)
 
-            # Save cookies for next run
-            cookies = context.cookies()
-            cookie_mgr.save_cookies("mail.google.com", cookies)
-
+            # Cookies already saved by launch_with_login
+            page.close()
+            context.close()
             browser.close()
             launcher.close()
+
             return {"status": "sent", "message": f"browser email sent to {to_email}"}
 
         except Exception as exc:
@@ -237,16 +229,6 @@ class EmailChannel(BaseChannel):
             except Exception:
                 pass
             return {"status": "failed", "error": str(exc), "message": ""}
-
-    def _build_full_message(self, body: str, contact: dict) -> str:
-        lines = [body, ""]
-        signature = contact.get("signature", "Best,\nYour Name\nyou@example.com")
-        lines.append(signature)
-        lines.append("")
-        lines.append("---")
-        lines.append(contact.get("address", "123 Main Street, Anytown, USA"))
-        lines.append("Reply 'STOP' to unsubscribe.")
-        return "\n".join(lines)
 
 
 @register_channel
@@ -308,60 +290,22 @@ class BrowserLinkedInChannel(BaseChannel):
             print(f"       {message[:200]}...")
             return {"status": "queued", "message": "dry-run"}
 
-        session_cfg = (
-            self.config.get("session", {}) if isinstance(self.config, dict) else {}
-        )
-        cookies_dir = session_cfg.get("cookies_dir", "state/cookies")
-        headless = session_cfg.get("headless_after_login", True)
-        login_timeout = session_cfg.get("login_timeout_seconds", 600)
-
-        cookie_mgr = CookieManager(cookies_dir)
-        launcher = BrowserLauncher(
-            cookie_mgr,
-            headless_after_login=headless,
-            login_timeout_seconds=login_timeout,
-        )
+        launcher, cookie_mgr = self._get_launcher("linkedin.com")
 
         try:
-            browser = launcher.launch(headless=False)
-            context = launcher.new_context(browser, "linkedin.com")
+            browser, context = launcher.launch_with_login(
+                domain="linkedin.com",
+                login_url="https://www.linkedin.com/login",
+                success_selector='[data-test-id="main-feed"], .global-nav, [class*="feed"]',
+                login_message=(
+                    f"\n{'='*70}\n"
+                    f"PLEASE LOG INTO LINKEDIN IN THE BROWSER WINDOW\n"
+                    f"Open the noVNC URL shown above, complete 2FA if prompted,\n"
+                    f"then press Enter here when logged in.\n"
+                    f"{'='*70}\n"
+                ),
+            )
             page = context.new_page()
-            page.goto("https://www.linkedin.com/login", timeout=30000)
-
-            # Check if session is valid (feed or profile present)
-            session_valid = False
-            try:
-                page.wait_for_selector(
-                    '[data-test-id="main-feed"], .global-nav, [class*="feed"]',
-                    timeout=5000,
-                )
-                session_valid = True
-            except Exception:
-                session_valid = False
-
-            if not session_valid:
-                browser.close()
-                browser = launcher.launch(headless=False)
-                context = launcher.new_context(browser, "linkedin.com")
-                page = context.new_page()
-                page.goto("https://www.linkedin.com/login", timeout=30000)
-                ok = wait_for_login(
-                    page,
-                    success_selector='[data-test-id="main-feed"], .global-nav, [class*="feed"]',
-                    timeout_seconds=login_timeout,
-                    message=(
-                        f"\n{'='*60}\n"
-                        f"PLEASE LOG INTO LINKEDIN IN THE BROWSER WINDOW\n"
-                        f"Complete 2FA if prompted, then the script will continue.\n"
-                        f"{'='*60}\n"
-                    ),
-                )
-                if not ok:
-                    browser.close()
-                    launcher.close()
-                    return {"status": "failed", "error": "login timeout", "message": ""}
-                cookies = context.cookies()
-                cookie_mgr.save_cookies("linkedin.com", cookies)
 
             # Navigate to profile and send message
             page.goto(profile_url, timeout=30000)
@@ -389,14 +333,13 @@ class BrowserLinkedInChannel(BaseChannel):
                 page.click('button[type="submit"], [class*="send"]')
                 human_delay(2, 3)
             except Exception:
-                # Fallback: just record the attempt
                 pass
 
-            cookies = context.cookies()
-            cookie_mgr.save_cookies("linkedin.com", cookies)
-
+            page.close()
+            context.close()
             browser.close()
             launcher.close()
+
             return {
                 "status": "sent",
                 "message": f"browser LinkedIn message to {profile_url}",
@@ -436,60 +379,22 @@ class BrowserTwitterChannel(BaseChannel):
             print(f"       {message[:200]}...")
             return {"status": "queued", "message": "dry-run"}
 
-        session_cfg = (
-            self.config.get("session", {}) if isinstance(self.config, dict) else {}
-        )
-        cookies_dir = session_cfg.get("cookies_dir", "state/cookies")
-        headless = session_cfg.get("headless_after_login", True)
-        login_timeout = session_cfg.get("login_timeout_seconds", 600)
-
-        cookie_mgr = CookieManager(cookies_dir)
-        launcher = BrowserLauncher(
-            cookie_mgr,
-            headless_after_login=headless,
-            login_timeout_seconds=login_timeout,
-        )
+        launcher, cookie_mgr = self._get_launcher("x.com")
 
         try:
-            browser = launcher.launch(headless=False)
-            context = launcher.new_context(browser, "x.com")
+            browser, context = launcher.launch_with_login(
+                domain="x.com",
+                login_url="https://x.com/i/flow/login",
+                success_selector='[data-testid="primaryColumn"], [data-testid="AppTabBar"]',
+                login_message=(
+                    f"\n{'='*70}\n"
+                    f"PLEASE LOG INTO TWITTER/X IN THE BROWSER WINDOW\n"
+                    f"Open the noVNC URL shown above, complete 2FA if prompted,\n"
+                    f"then press Enter here when logged in.\n"
+                    f"{'='*70}\n"
+                ),
+            )
             page = context.new_page()
-            page.goto("https://x.com/i/flow/login", timeout=30000)
-
-            # Check if session is valid
-            session_valid = False
-            try:
-                page.wait_for_selector(
-                    '[data-testid="primaryColumn"], [data-testid="AppTabBar"]',
-                    timeout=5000,
-                )
-                session_valid = True
-            except Exception:
-                session_valid = False
-
-            if not session_valid:
-                browser.close()
-                browser = launcher.launch(headless=False)
-                context = launcher.new_context(browser, "x.com")
-                page = context.new_page()
-                page.goto("https://x.com/i/flow/login", timeout=30000)
-                ok = wait_for_login(
-                    page,
-                    success_selector='[data-testid="primaryColumn"], [data-testid="AppTabBar"]',
-                    timeout_seconds=login_timeout,
-                    message=(
-                        f"\n{'='*60}\n"
-                        f"PLEASE LOG INTO TWITTER/X IN THE BROWSER WINDOW\n"
-                        f"Complete 2FA if prompted, then the script will continue.\n"
-                        f"{'='*60}\n"
-                    ),
-                )
-                if not ok:
-                    browser.close()
-                    launcher.close()
-                    return {"status": "failed", "error": "login timeout", "message": ""}
-                cookies = context.cookies()
-                cookie_mgr.save_cookies("x.com", cookies)
 
             # Navigate to user profile and send DM
             profile_url = f"https://x.com/{handle}"
@@ -520,11 +425,11 @@ class BrowserTwitterChannel(BaseChannel):
             except Exception:
                 pass
 
-            cookies = context.cookies()
-            cookie_mgr.save_cookies("x.com", cookies)
-
+            page.close()
+            context.close()
             browser.close()
             launcher.close()
+
             return {
                 "status": "sent",
                 "message": f"browser Twitter DM to {handle}",
