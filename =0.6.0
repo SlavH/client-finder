@@ -1,4 +1,0 @@
-Requirement already satisfied: curl_cffi in /usr/local/lib/python3.13/dist-packages (0.16.3)
-Requirement already satisfied: cffi>=2.0.0 in /usr/local/lib/python3.13/dist-packages (from curl_cffi) (2.1.1)
-Requirement already satisfied: certifi>=2024.2.2 in /usr/local/lib/python3.13/dist-packages (from curl_cffi) (2026.7.22)
-Requirement already satisfied: pycparser in /usr/local/lib/python3.13/dist-packages (from cffi>=2.0.0->curl_cffi) (3.11)
