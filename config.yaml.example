@@ -22,6 +22,10 @@ outreach:
     webform: 10
   send_hours: [9, 10, 11, 14, 15, 16]   # local hours when sending is allowed
   timezone: "UTC"
+  email:
+    host: "smtp.gmail.com"
+    port: 587
+    from_name: "Slav Hayrapetyan"
 
 work_first:
   output_dir: "work/"

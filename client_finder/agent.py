@@ -283,7 +283,9 @@ class ClientFinderAgent:
         if channel_cls is None:
             raise ValueError(f"Unknown channel: {channel}")
 
-        sender = channel_cls(config=self.config, dry_run=dry_run)
+        channel_config = dict(self.config)
+        channel_config["contact"] = self.profile.contact
+        sender = channel_cls(config=channel_config, dry_run=dry_run)
         result = sender.send(
             lead=lead,
             subject=draft.get("subject"),

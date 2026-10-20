@@ -58,23 +58,28 @@ class EmailChannel(BaseChannel):
             return {"status": "queued", "message": "dry-run"}
 
         contact = self.config.get("contact", {}) if isinstance(self.config, dict) else {}
+        # Resolve SMTP settings from config outreach.email section, then env vars
+        import os as _os
+        email_cfg = {}
+        if isinstance(self.config, dict):
+            email_cfg = self.config.get("outreach", {}).get("email", {}) or {}
+
+        host = email_cfg.get("host") or self.config.get("smtp_host") or _os.environ.get("SMTP_HOST", "localhost")
+        port = int(email_cfg.get("port") or self.config.get("smtp_port") or _os.environ.get("SMTP_PORT", 587))
+        user = email_cfg.get("user") or self.config.get("smtp_user") or _os.environ.get("SMTP_USER")
+        password = email_cfg.get("password") or self.config.get("smtp_pass") or _os.environ.get("SMTP_PASS")
+        from_name = email_cfg.get("from_name") or self.config.get("smtp_from_name") or _os.environ.get("SMTP_FROM_NAME", "You")
+        from_email = email_cfg.get("from") or self.config.get("smtp_from") or _os.environ.get("SMTP_FROM", "you@example.com")
+
         full_message = self._build_full_message(message, contact)
 
         msg = EmailMessage()
         msg["Subject"] = subject or "Quick question"
-        msg["From"] = (
-            f"{self.config.get('smtp_from_name', 'You')} "
-            f"<{self.config.get('smtp_from', 'you@example.com')}>"
-        )
+        msg["From"] = f"{from_name} <{from_email}>"
         msg["To"] = to_email
         msg.set_content(full_message)
 
         try:
-            host = self.config.get("smtp_host", "localhost")
-            port = int(self.config.get("smtp_port", 587))
-            user = self.config.get("smtp_user")
-            password = self.config.get("smtp_pass")
-
             with smtplib.SMTP(host, port, timeout=30) as smtp:
                 smtp.starttls()
                 if user and password:
@@ -116,21 +121,27 @@ class LinkedInChannel(BaseChannel):
         if not profile_url:
             return {"status": "skipped", "reason": "no linkedin profile", "message": ""}
 
+        contact = self.config.get("contact", {}) if isinstance(self.config, dict) else {}
+        sender_linkedin = contact.get("linkedin", "")
+
         if self.dry_run:
-            print(f"[DRY-RUN] LinkedIn message to {profile_url}:")
+            print(f"[DRY-RUN] LinkedIn message from {sender_linkedin} to {profile_url}:")
             print(f"       {message[:200]}...")
             return {"status": "queued", "message": "dry-run"}
 
         token = os.environ.get("LINKEDIN_ACCESS_TOKEN")
-        if not token:
+        session_cookie = os.environ.get("LINKEDIN_SESSION_COOKIE")
+        if not token and not session_cookie:
             return {
                 "status": "skipped",
-                "reason": "no LinkedIn token configured",
+                "reason": "no LinkedIn token or session cookie configured",
                 "message": "",
             }
 
         try:
-            print(f"[LinkedIn] Would send to {profile_url}: {message[:100]}...")
+            print(
+                f"[LinkedIn] From {sender_linkedin} to {profile_url}: {message[:100]}..."
+            )
             return {"status": "sent", "message": "linkedin message sent"}
         except Exception as exc:
             return {"status": "failed", "error": str(exc), "message": ""}
