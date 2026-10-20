@@ -1,6 +1,3 @@
-# Target industries, locations, and do-not-contact rules
-# These are used by the LLM to score and filter leads
-
 target:
   industries:
     - healthcare
@@ -13,6 +10,7 @@ target:
     - United States
     - Canada
     - United Kingdom
+    - Armenia
 
 do_not_contact_domains:
   - google.com

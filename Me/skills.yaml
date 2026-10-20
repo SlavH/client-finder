@@ -7,11 +7,11 @@ services:
   - API integrations
 
 rates:
-  hourly: 120
-  project_min: 3000
+  hourly: 100
+  project_min: 2000
   currency: USD
 
-availability: "Open for new projects starting next month"
+availability: "Open for new projects"
 
 target:
   industries:
@@ -25,6 +25,7 @@ target:
     - United States
     - Canada
     - United Kingdom
+    - Armenia
 
 do_not_contact_domains:
   - google.com
