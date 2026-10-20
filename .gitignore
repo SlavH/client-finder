@@ -5,6 +5,7 @@ __pycache__/
 .env
 config.yaml
 .client_finder_state.db
+state/cookies/
 work/
 *.egg-info/
 dist/

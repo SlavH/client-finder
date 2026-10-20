@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -318,3 +320,39 @@ class StateStore:
 
     def close(self) -> None:
         self._conn.close()
+
+    # ----- cookie persistence -----
+
+    def save_cookies(self, domain: str, cookies: list[dict]) -> None:
+        """Save cookies for a domain to state/cookies/<domain>.json."""
+        cookies_dir = Path(self.db_path).parent / "cookies"
+        cookies_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(cookies_dir, 0o700)
+        safe_name = domain.replace(".", "_").replace(":", "_")
+        path = cookies_dir / f"{safe_name}.json"
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cookies, f, indent=2)
+        os.chmod(path, 0o600)
+
+    def load_cookies(self, domain: str) -> list[dict] | None:
+        """Load saved cookies for a domain. Returns None if not found."""
+        cookies_dir = Path(self.db_path).parent / "cookies"
+        safe_name = domain.replace(".", "_").replace(":", "_")
+        path = cookies_dir / f"{safe_name}.json"
+        if not path.exists():
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            os.chmod(path, 0o600)
+            return data if isinstance(data, list) else None
+        except Exception:
+            return None
+
+    def clear_cookies(self, domain: str) -> None:
+        """Delete saved cookies for a domain (forces re-login)."""
+        cookies_dir = Path(self.db_path).parent / "cookies"
+        safe_name = domain.replace(".", "_").replace(":", "_")
+        path = cookies_dir / f"{safe_name}.json"
+        if path.exists():
+            path.unlink()

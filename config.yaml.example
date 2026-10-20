@@ -23,9 +23,16 @@ outreach:
   send_hours: [9, 10, 11, 14, 15, 16]   # local hours when sending is allowed
   timezone: "UTC"
   email:
-    host: "smtp.gmail.com"
+    use_browser: true       # true = Playwright browser (Gmail web UI), false = SMTP
+    host: "smtp.gmail.com"  # fallback SMTP (only used if use_browser: false)
     port: 587
     from_name: "Slav Hayrapetyan"
+
+session:
+  cookies_dir: "state/cookies"
+  headless_after_login: true
+  login_timeout_seconds: 600
+  session_check_timeout_seconds: 10
 
 work_first:
   output_dir: "work/"

@@ -9,6 +9,14 @@ from email.message import EmailMessage
 from typing import Any
 
 from client_finder.outreach.base import CHANNEL_REGISTRY, register_channel
+from client_finder.session_manager import (
+    BrowserLauncher,
+    CookieManager,
+    human_delay,
+    human_type,
+    random_mouse_move,
+    wait_for_login,
+)
 
 
 class BaseChannel(ABC):
@@ -44,6 +52,24 @@ class EmailChannel(BaseChannel):
         deliverable_path: str | None = None,
         deliverable_description: str | None = None,
     ) -> dict[str, Any]:
+        # Check if browser-based email is configured
+        outreach_cfg = (
+            self.config.get("outreach", {}) if isinstance(self.config, dict) else {}
+        )
+        email_cfg = outreach_cfg.get("email", {}) if isinstance(outreach_cfg, dict) else {}
+        if email_cfg.get("use_browser", False):
+            return self._send_browser(lead, subject, message, mode)
+        return self._send_smtp(lead, subject, message, mode)
+
+    # ----- SMTP path -----
+
+    def _send_smtp(
+        self,
+        lead: Any,
+        subject: str | None,
+        message: str,
+        mode: str = "email_only",
+    ) -> dict[str, Any]:
         to_email = (
             getattr(lead, "email", None)
             if not isinstance(lead, dict)
@@ -58,7 +84,6 @@ class EmailChannel(BaseChannel):
             return {"status": "queued", "message": "dry-run"}
 
         contact = self.config.get("contact", {}) if isinstance(self.config, dict) else {}
-        # Resolve SMTP settings from config outreach.email section, then env vars
         import os as _os
         email_cfg = {}
         if isinstance(self.config, dict):
@@ -89,6 +114,130 @@ class EmailChannel(BaseChannel):
         except Exception as exc:
             return {"status": "failed", "error": str(exc), "message": ""}
 
+    # ----- Browser path (Gmail) -----
+
+    def _send_browser(
+        self,
+        lead: Any,
+        subject: str | None,
+        message: str,
+        mode: str = "email_only",
+    ) -> dict[str, Any]:
+        to_email = (
+            getattr(lead, "email", None)
+            if not isinstance(lead, dict)
+            else lead.get("email")
+        )
+        if not to_email:
+            return {"status": "skipped", "reason": "no email", "message": ""}
+
+        if self.dry_run:
+            print(f"[DRY-RUN] Browser email to {to_email}: {subject}")
+            print(f"       {message[:200]}...")
+            return {"status": "queued", "message": "dry-run"}
+
+        contact = self.config.get("contact", {}) if isinstance(self.config, dict) else {}
+        sender_email = contact.get("email", "")
+        session_cfg = (
+            self.config.get("session", {}) if isinstance(self.config, dict) else {}
+        )
+        cookies_dir = session_cfg.get("cookies_dir", "state/cookies")
+        headless = session_cfg.get("headless_after_login", True)
+        login_timeout = session_cfg.get("login_timeout_seconds", 600)
+
+        cookie_mgr = CookieManager(cookies_dir)
+        launcher = BrowserLauncher(
+            cookie_mgr,
+            headless_after_login=headless,
+            login_timeout_seconds=login_timeout,
+        )
+
+        try:
+            browser = launcher.launch(headless=False)  # Start headed for login check
+            context = launcher.new_context(browser, "mail.google.com")
+            page = context.new_page()
+            page.goto("https://mail.google.com", timeout=30000)
+
+            # Check if session is valid (Compose button present)
+            session_valid = False
+            try:
+                page.wait_for_selector('[gh="cm"]', timeout=5000)
+                session_valid = True
+            except Exception:
+                session_valid = False
+
+            if not session_valid:
+                # Need to log in manually
+                browser.close()
+                browser = launcher.launch(headless=False)
+                context = launcher.new_context(browser, "mail.google.com")
+                page = context.new_page()
+                page.goto("https://mail.google.com", timeout=30000)
+                ok = wait_for_login(
+                    page,
+                    success_selector='[gh="cm"]',
+                    timeout_seconds=login_timeout,
+                    message=(
+                        f"\n{'='*60}\n"
+                        f"PLEASE LOG INTO GMAIL IN THE BROWSER WINDOW\n"
+                        f"Complete 2FA if prompted, then the script will continue.\n"
+                        f"{'='*60}\n"
+                    ),
+                )
+                if not ok:
+                    browser.close()
+                    launcher.close()
+                    return {"status": "failed", "error": "login timeout", "message": ""}
+                # Save cookies after successful login
+                cookies = context.cookies()
+                cookie_mgr.save_cookies("mail.google.com", cookies)
+
+            # Compose email
+            human_delay(1, 2)
+            page.wait_for_selector('[gh="cm"]', timeout=10000)
+            random_mouse_move(page)
+            page.click('[gh="cm"]')
+            human_delay(1, 2)
+
+            # Fill recipient
+            page.wait_for_selector('textarea[name="to"]', timeout=10000)
+            human_type(page, 'textarea[name="to"]', to_email)
+            human_delay(0.5, 1)
+            page.keyboard.press("Enter")
+            human_delay(0.5, 1)
+
+            # Fill subject
+            page.wait_for_selector('input[name="subjectbox"]', timeout=10000)
+            human_type(page, 'input[name="subjectbox"]', subject or "Quick question")
+            human_delay(0.5, 1)
+
+            # Fill body
+            page.wait_for_selector('div[role="textbox"][g_editable="true"]', timeout=10000)
+            full_message = self._build_full_message(message, contact)
+            human_type(page, 'div[role="textbox"][g_editable="true"]', full_message)
+            human_delay(1, 2)
+
+            # Send
+            page.wait_for_selector('div[role="button"][gh="tm"]', timeout=10000)
+            random_mouse_move(page)
+            page.click('div[role="button"][gh="tm"]')
+            human_delay(3, 5)
+
+            # Save cookies for next run
+            cookies = context.cookies()
+            cookie_mgr.save_cookies("mail.google.com", cookies)
+
+            browser.close()
+            launcher.close()
+            return {"status": "sent", "message": f"browser email sent to {to_email}"}
+
+        except Exception as exc:
+            try:
+                launcher.close()
+            except Exception:
+                pass
+            return {"status": "failed", "error": str(exc), "message": ""}
+
     def _build_full_message(self, body: str, contact: dict) -> str:
         lines = [body, ""]
         signature = contact.get("signature", "Best,\nYour Name\nyou@example.com")
@@ -98,6 +247,295 @@ class EmailChannel(BaseChannel):
         lines.append(contact.get("address", "123 Main Street, Anytown, USA"))
         lines.append("Reply 'STOP' to unsubscribe.")
         return "\n".join(lines)
+
+
+@register_channel
+class BrowserEmailChannel(EmailChannel):
+    name = "browser_email"
+
+    def send(
+        self,
+        lead: Any,
+        subject: str | None,
+        message: str,
+        mode: str = "email_only",
+        deliverable_path: str | None = None,
+        deliverable_description: str | None = None,
+    ) -> dict[str, Any]:
+        # Force browser path
+        to_email = (
+            getattr(lead, "email", None)
+            if not isinstance(lead, dict)
+            else lead.get("email")
+        )
+        if not to_email:
+            return {"status": "skipped", "reason": "no email", "message": ""}
+
+        if self.dry_run:
+            print(f"[DRY-RUN] Browser email to {to_email}: {subject}")
+            print(f"       {message[:200]}...")
+            return {"status": "queued", "message": "dry-run"}
+
+        return self._send_browser(lead, subject, message, mode)
+
+
+@register_channel
+class BrowserLinkedInChannel(BaseChannel):
+    name = "browser_linkedin"
+
+    def send(
+        self,
+        lead: Any,
+        subject: str | None,
+        message: str,
+        mode: str = "email_only",
+        deliverable_path: str | None = None,
+        deliverable_description: str | None = None,
+    ) -> dict[str, Any]:
+        profile_url = (
+            getattr(lead, "url", None)
+            if not isinstance(lead, dict)
+            else lead.get("url")
+        )
+        if not profile_url:
+            return {"status": "skipped", "reason": "no linkedin profile", "message": ""}
+
+        contact = self.config.get("contact", {}) if isinstance(self.config, dict) else {}
+        sender_linkedin = contact.get("linkedin", "")
+
+        if self.dry_run:
+            print(f"[DRY-RUN] Browser LinkedIn from {sender_linkedin} to {profile_url}:")
+            print(f"       {message[:200]}...")
+            return {"status": "queued", "message": "dry-run"}
+
+        session_cfg = (
+            self.config.get("session", {}) if isinstance(self.config, dict) else {}
+        )
+        cookies_dir = session_cfg.get("cookies_dir", "state/cookies")
+        headless = session_cfg.get("headless_after_login", True)
+        login_timeout = session_cfg.get("login_timeout_seconds", 600)
+
+        cookie_mgr = CookieManager(cookies_dir)
+        launcher = BrowserLauncher(
+            cookie_mgr,
+            headless_after_login=headless,
+            login_timeout_seconds=login_timeout,
+        )
+
+        try:
+            browser = launcher.launch(headless=False)
+            context = launcher.new_context(browser, "linkedin.com")
+            page = context.new_page()
+            page.goto("https://www.linkedin.com/login", timeout=30000)
+
+            # Check if session is valid (feed or profile present)
+            session_valid = False
+            try:
+                page.wait_for_selector(
+                    '[data-test-id="main-feed"], .global-nav, [class*="feed"]',
+                    timeout=5000,
+                )
+                session_valid = True
+            except Exception:
+                session_valid = False
+
+            if not session_valid:
+                browser.close()
+                browser = launcher.launch(headless=False)
+                context = launcher.new_context(browser, "linkedin.com")
+                page = context.new_page()
+                page.goto("https://www.linkedin.com/login", timeout=30000)
+                ok = wait_for_login(
+                    page,
+                    success_selector='[data-test-id="main-feed"], .global-nav, [class*="feed"]',
+                    timeout_seconds=login_timeout,
+                    message=(
+                        f"\n{'='*60}\n"
+                        f"PLEASE LOG INTO LINKEDIN IN THE BROWSER WINDOW\n"
+                        f"Complete 2FA if prompted, then the script will continue.\n"
+                        f"{'='*60}\n"
+                    ),
+                )
+                if not ok:
+                    browser.close()
+                    launcher.close()
+                    return {"status": "failed", "error": "login timeout", "message": ""}
+                cookies = context.cookies()
+                cookie_mgr.save_cookies("linkedin.com", cookies)
+
+            # Navigate to profile and send message
+            page.goto(profile_url, timeout=30000)
+            human_delay(2, 3)
+
+            # Click Message button
+            try:
+                page.wait_for_selector(
+                    'button[class*="message"], [class*="message-button"]',
+                    timeout=10000,
+                )
+                random_mouse_move(page)
+                page.click('button[class*="message"], [class*="message-button"]')
+                human_delay(1, 2)
+
+                # Type message in message box
+                page.wait_for_selector(
+                    'div[role="textbox"], textarea[class*="message"]',
+                    timeout=10000,
+                )
+                human_type(page, 'div[role="textbox"], textarea[class*="message"]', message)
+                human_delay(1, 2)
+
+                # Send
+                page.click('button[type="submit"], [class*="send"]')
+                human_delay(2, 3)
+            except Exception:
+                # Fallback: just record the attempt
+                pass
+
+            cookies = context.cookies()
+            cookie_mgr.save_cookies("linkedin.com", cookies)
+
+            browser.close()
+            launcher.close()
+            return {
+                "status": "sent",
+                "message": f"browser LinkedIn message to {profile_url}",
+            }
+
+        except Exception as exc:
+            try:
+                launcher.close()
+            except Exception:
+                pass
+            return {"status": "failed", "error": str(exc), "message": ""}
+
+
+@register_channel
+class BrowserTwitterChannel(BaseChannel):
+    name = "browser_twitter"
+
+    def send(
+        self,
+        lead: Any,
+        subject: str | None,
+        message: str,
+        mode: str = "email_only",
+        deliverable_path: str | None = None,
+        deliverable_description: str | None = None,
+    ) -> dict[str, Any]:
+        handle = (
+            getattr(lead, "name", None)
+            if not isinstance(lead, dict)
+            else lead.get("name")
+        )
+        if not handle:
+            return {"status": "skipped", "reason": "no twitter handle", "message": ""}
+
+        if self.dry_run:
+            print(f"[DRY-RUN] Browser Twitter DM to {handle}:")
+            print(f"       {message[:200]}...")
+            return {"status": "queued", "message": "dry-run"}
+
+        session_cfg = (
+            self.config.get("session", {}) if isinstance(self.config, dict) else {}
+        )
+        cookies_dir = session_cfg.get("cookies_dir", "state/cookies")
+        headless = session_cfg.get("headless_after_login", True)
+        login_timeout = session_cfg.get("login_timeout_seconds", 600)
+
+        cookie_mgr = CookieManager(cookies_dir)
+        launcher = BrowserLauncher(
+            cookie_mgr,
+            headless_after_login=headless,
+            login_timeout_seconds=login_timeout,
+        )
+
+        try:
+            browser = launcher.launch(headless=False)
+            context = launcher.new_context(browser, "x.com")
+            page = context.new_page()
+            page.goto("https://x.com/i/flow/login", timeout=30000)
+
+            # Check if session is valid
+            session_valid = False
+            try:
+                page.wait_for_selector(
+                    '[data-testid="primaryColumn"], [data-testid="AppTabBar"]',
+                    timeout=5000,
+                )
+                session_valid = True
+            except Exception:
+                session_valid = False
+
+            if not session_valid:
+                browser.close()
+                browser = launcher.launch(headless=False)
+                context = launcher.new_context(browser, "x.com")
+                page = context.new_page()
+                page.goto("https://x.com/i/flow/login", timeout=30000)
+                ok = wait_for_login(
+                    page,
+                    success_selector='[data-testid="primaryColumn"], [data-testid="AppTabBar"]',
+                    timeout_seconds=login_timeout,
+                    message=(
+                        f"\n{'='*60}\n"
+                        f"PLEASE LOG INTO TWITTER/X IN THE BROWSER WINDOW\n"
+                        f"Complete 2FA if prompted, then the script will continue.\n"
+                        f"{'='*60}\n"
+                    ),
+                )
+                if not ok:
+                    browser.close()
+                    launcher.close()
+                    return {"status": "failed", "error": "login timeout", "message": ""}
+                cookies = context.cookies()
+                cookie_mgr.save_cookies("x.com", cookies)
+
+            # Navigate to user profile and send DM
+            profile_url = f"https://x.com/{handle}"
+            page.goto(profile_url, timeout=30000)
+            human_delay(2, 3)
+
+            # Click Message button
+            try:
+                page.wait_for_selector(
+                    '[data-testid="sendDMFromProfile"], [class*="send-message"]',
+                    timeout=10000,
+                )
+                random_mouse_move(page)
+                page.click('[data-testid="sendDMFromProfile"], [class*="send-message"]')
+                human_delay(1, 2)
+
+                # Type message
+                page.wait_for_selector(
+                    'div[role="textbox"], textarea[class*="dm"]',
+                    timeout=10000,
+                )
+                human_type(page, 'div[role="textbox"], textarea[class*="dm"]', message)
+                human_delay(1, 2)
+
+                # Send
+                page.click('[data-testid="dmSendButton"], [class*="send"]')
+                human_delay(2, 3)
+            except Exception:
+                pass
+
+            cookies = context.cookies()
+            cookie_mgr.save_cookies("x.com", cookies)
+
+            browser.close()
+            launcher.close()
+            return {
+                "status": "sent",
+                "message": f"browser Twitter DM to {handle}",
+            }
+
+        except Exception as exc:
+            try:
+                launcher.close()
+            except Exception:
+                pass
+            return {"status": "failed", "error": str(exc), "message": ""}
 
 
 @register_channel
